@@ -1,0 +1,8 @@
+# Secrets: access token, PIN and phone number live here
+config.json
+
+# Output of the daily runs
+reminder.log
+
+.DS_Store
+node_modules/
