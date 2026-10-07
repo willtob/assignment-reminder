@@ -12,6 +12,15 @@ Get WhatsApp messages about upcoming Moodle assignments.
 
 If nothing is due, neither script sends anything.
 
+**Two-way bot (optional):** while `start-bot.sh` is running, you can text the bot a command and it replies:
+
+| You send | It replies with |
+|---|---|
+| `tomorrow` | Everything due tomorrow |
+| `week` (or `due`) | Everything due in the next 7 days |
+| `grades` | Your overall grade in each course |
+| anything else | The list of commands |
+
 ---
 
 ## How it works
@@ -34,7 +43,21 @@ If nothing is due, neither script sends anything.
 
 The weekly summary works the same way: launchd starts **`weekly.js`** on Saturdays at 10:00. It collects everything due in the next 7 days and sends it as **one** message using its own template. WhatsApp doesn't allow line breaks inside a template value, so the assignments are separated with ` • `. A very long list is cut off with "…and N more".
 
-The script has **no dependencies**. It's plain Node.js (v18 or newer), using the built-in `fetch`.
+The bot works the other way round. Meta calls *you*: every message you send to the bot's number is forwarded as an HTTP POST (a **webhook**) to a URL you choose.
+
+```
+ 📱 "week" ──▶ WhatsApp ──POST──▶ Cloudflare tunnel ──▶ bot.js on your Mac ──▶ Moodle
+ 📱 reply  ◀── WhatsApp ◀──────── POST /messages ◀──────────┘
+```
+
+1. **`bot.js`** runs a small web server on `localhost:3000`.
+2. **`cloudflared`** opens a free public HTTPS address (`https://random-words.trycloudflare.com`) that forwards to that server, so Meta can reach your Mac without any router setup.
+3. **`connect-webhook.js`** tells Meta that address. Meta checks it once by sending a GET with the `webhook_verify_token`, which `bot.js` answers.
+4. When a message arrives, `bot.js` checks the `X-Hub-Signature-256` header (signed with your app secret) so nobody else can fake messages. It also ignores any number except yours, works out the reply, and sends it back.
+
+Replies are normal text messages, not templates. After you message a WhatsApp business number, it may answer freely for 24 hours.
+
+The scripts have **no dependencies**. It's plain Node.js (v18 or newer), using the built-in `fetch`.
 
 ---
 
@@ -49,6 +72,10 @@ The script has **no dependencies**. It's plain Node.js (v18 or newer), using the
 | `com.williamtobin.assignment-reminder.plist` | launchd schedule for `remind.js` (daily at 14:30). |
 | `com.williamtobin.assignment-reminder.weekly.plist` | launchd schedule for `weekly.js` (Saturdays at 10:00). |
 | `reminder.log` | Output from every run of both scripts. Created automatically and not in git. |
+| `bot.js` | Two-way bot. A web server that answers the commands you text it. |
+| `connect-webhook.js` | Tells Meta the bot's current public address. |
+| `start-bot.sh` | Starts the bot and the tunnel, then connects the webhook. Use this one. |
+| `tunnel.log` | Output from `cloudflared`. Created automatically and not in git. |
 
 ---
 
@@ -78,6 +105,16 @@ launchctl bootout   gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignm
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.plist
 ```
 For the weekly summary, run the same commands with `com.williamtobin.assignment-reminder.weekly.plist`.
+
+**Run the two-way bot** (stop it with Ctrl+C):
+```bash
+~/assignment-reminder/start-bot.sh
+```
+
+**Try a bot command without WhatsApp:**
+```bash
+node ~/assignment-reminder/bot.js --test week
+```
 
 **Turn one off:**
 ```bash
@@ -143,6 +180,11 @@ Then fill in `config.json`:
 | `weekly_template_name` | `weekly_summary` |
 | `template_language` | `en` |
 | `pin` | The PIN you chose in step 5 (kept here just so you don't lose it) |
+| `app_id` | Bot only. Your app's ID, shown at the top of the app dashboard |
+| `app_secret` | Bot only. *App settings → Basic → App secret → Show* |
+| `webhook_verify_token` | Bot only. Any long random string, e.g. the output of `openssl rand -hex 24` |
+
+For the bot you also need `cloudflared`: `brew install cloudflared`.
 
 ### 4. Schedule it
 
@@ -166,6 +208,8 @@ Each `.plist` has absolute paths (`/usr/local/bin/node` and `/Users/william.tobi
 | `(#190) Invalid OAuth access token` | The token was revoked or copied wrong. Generate a new one (step 4). |
 | No message, and the log says "Nothing due tomorrow" or "Nothing due in the next 7 days" | Working as intended 🎉 |
 | No message, and nothing in the log | The Mac was switched off at the scheduled time. launchd only catches up on runs missed while the Mac was asleep, not while it was off. |
+| Bot doesn't answer | It only works while `start-bot.sh` is running and the Mac is awake. Check its output for "Rejected a request with a bad signature" (wrong `app_secret`) or "Ignored a message from another number" (`send_to` doesn't match). |
+| `connect-webhook.js`: "Meta could not reach …" | The new tunnel address wasn't ready yet. Stop and run `start-bot.sh` again. |
 
 ---
 

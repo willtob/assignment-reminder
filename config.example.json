@@ -6,5 +6,8 @@
   "template_name": "assignment_reminder",
   "weekly_template_name": "weekly_summary",
   "template_language": "en",
-  "pin": ""
+  "pin": "",
+  "app_id": "",
+  "app_secret": "",
+  "webhook_verify_token": ""
 }

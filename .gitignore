@@ -6,3 +6,6 @@ reminder.log
 
 .DS_Store
 node_modules/
+
+# Output of the bot's Cloudflare tunnel
+tunnel.log
