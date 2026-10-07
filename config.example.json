@@ -4,6 +4,7 @@
   "whatsapp_business_account_id": "",
   "send_to": "",
   "template_name": "assignment_reminder",
+  "weekly_template_name": "weekly_summary",
   "template_language": "en",
   "pin": ""
 }

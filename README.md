@@ -1,12 +1,16 @@
 # 📚 Assignment Reminder
 
-Get a WhatsApp message the day before a Moodle assignment is due.
+Get WhatsApp messages about upcoming Moodle assignments.
 
-Every day at **14:30**, a small script on my Mac checks ESADE's Moodle (eCampus) for anything due **tomorrow**. For each assignment it finds, it sends me a WhatsApp message like this:
+**Daily reminder:** every day at **14:30**, a small script on my Mac checks ESADE's Moodle (eCampus) for anything due **tomorrow**. For each assignment it finds, it sends me a WhatsApp message like this:
 
 > 📚 Reminder: Homework 202 (Springs) for Corporate Finance is due tomorrow at 14:00. Good luck!
 
-If nothing is due, it doesn't send anything.
+**Weekly summary:** every **Saturday at 10:00**, a second script sends one message listing everything due in the next 7 days:
+
+> 📅 Week ahead: you have 2 assignment(s) due in the next 7 days: Mon 12 Oct 14:00 Homework 202 (Corporate Finance) • Thu 15 Oct 23:59 Essay 1 (Marketing). Good luck!
+
+If nothing is due, neither script sends anything.
 
 ---
 
@@ -28,6 +32,8 @@ If nothing is due, it doesn't send anything.
 2. **`remind.js`** asks Moodle for every deadline in the next 3 days and keeps only the ones due tomorrow (Madrid time).
 3. For each one, it sends a message through Meta's official **WhatsApp Cloud API**, using a pre-approved message template.
 
+The weekly summary works the same way: launchd starts **`weekly.js`** on Saturdays at 10:00. It collects everything due in the next 7 days and sends it as **one** message using its own template. WhatsApp doesn't allow line breaks inside a template value, so the assignments are separated with ` • `. A very long list is cut off with "…and N more".
+
 The script has **no dependencies**. It's plain Node.js (v18 or newer), using the built-in `fetch`.
 
 ---
@@ -36,12 +42,13 @@ The script has **no dependencies**. It's plain Node.js (v18 or newer), using the
 
 | File | What it is |
 |---|---|
-| `remind.js` | The main script. Reads Moodle and sends the WhatsApp messages. |
+| `remind.js` | Daily reminder. Reads Moodle and sends one message per assignment due tomorrow. |
+| `weekly.js` | Weekly summary. Sends one message listing everything due in the next 7 days. |
 | `config.example.json` | Template for your settings. Copy it to `config.json` and fill it in. |
 | `config.json` | Your real settings and secrets. **Not in git** (see `.gitignore`). |
-| `com.williamtobin.assignment-reminder.plist` | The launchd schedule (runs the script daily at 14:30). |
-| `wait-for-approval.sh` | One-off helper: waits until Meta approves the template, then sends a test message. |
-| `reminder.log` | Output from each daily run. Created automatically and not in git. |
+| `com.williamtobin.assignment-reminder.plist` | launchd schedule for `remind.js` (daily at 14:30). |
+| `com.williamtobin.assignment-reminder.weekly.plist` | launchd schedule for `weekly.js` (Saturdays at 10:00). |
+| `reminder.log` | Output from every run of both scripts. Created automatically and not in git. |
 
 ---
 
@@ -49,12 +56,14 @@ The script has **no dependencies**. It's plain Node.js (v18 or newer), using the
 
 **See what it would send, without sending anything:**
 ```bash
-node ~/assignment-reminder/remind.js --dry-run
+node ~/assignment-reminder/remind.js --dry-run   # daily reminder
+node ~/assignment-reminder/weekly.js --dry-run   # weekly summary
 ```
 
 **Send for real, right now:**
 ```bash
 node ~/assignment-reminder/remind.js
+node ~/assignment-reminder/weekly.js
 ```
 
 **Check what happened on past runs:**
@@ -62,16 +71,18 @@ node ~/assignment-reminder/remind.js
 cat ~/assignment-reminder/reminder.log
 ```
 
-**Change the time it runs:** edit `Hour` / `Minute` in the `.plist`, then reload it:
+**Change when it runs:** edit `Hour` / `Minute` (and `Weekday` for the weekly one: 0 or 7 = Sunday, 6 = Saturday) in the `.plist`, then reload it. For example, for the daily reminder:
 ```bash
 cp com.williamtobin.assignment-reminder.plist ~/Library/LaunchAgents/
 launchctl bootout   gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.plist
 ```
+For the weekly summary, run the same commands with `com.williamtobin.assignment-reminder.weekly.plist`.
 
-**Turn it off:**
+**Turn one off:**
 ```bash
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.plist          # daily
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.weekly.plist   # weekly
 ```
 
 ---
@@ -92,13 +103,14 @@ This is the long part, but you only do it once.
 
 1. **Create an app.** Go to [developers.facebook.com/apps](https://developers.facebook.com/apps), click *Create App*, pick the *"Connect with customers through WhatsApp"* use case, and connect a business portfolio.
 2. **Get a test number.** In the app, open *Use cases → Connect on WhatsApp → Step 1. Try it out*. This gives you a free sender number, plus its **Phone Number ID** and **WhatsApp Business Account ID**. Add your own phone number as a recipient.
-3. **Create the message template.** In WhatsApp Manager → *Message templates* → *Create template*:
-   - Category: **Utility**
-   - Name: `assignment_reminder`
-   - Language: **English**
-   - Body: `📚 Reminder: {{1}} for {{2}} is due tomorrow at {{3}}. Good luck!`
+3. **Create the two message templates.** In WhatsApp Manager → *Message templates* → *Create template*, choose Category **Utility** and Language **English** for both:
 
-   Submit it for review. Approval usually takes from a few minutes to a few hours.
+   | Name | Body |
+   |---|---|
+   | `assignment_reminder` | `📚 Reminder: {{1}} for {{2}} is due tomorrow at {{3}}. Good luck!` |
+   | `weekly_summary` | `📅 Week ahead: you have {{1}} assignment(s) due in the next 7 days: {{2}}. Good luck!` |
+
+   Submit them for review. Approval usually takes from a few minutes to a few hours, but can take up to 48 hours. A variable can't be the very first or last thing in the body, which is why both end with "Good luck!".
 4. **Get a permanent access token.** In Business Settings → *Users → System users*:
    - Create a system user (Employee role is fine).
    - Use *Assign assets* to give it **full control of both the app and the WhatsApp account**. If you only assign the WhatsApp account, the token screen will say "No permissions available".
@@ -128,17 +140,19 @@ Then fill in `config.json`:
 | `whatsapp_business_account_id` | *Try it out* page |
 | `send_to` | Your WhatsApp number, digits only with country code, e.g. `34612345678` |
 | `template_name` | `assignment_reminder` |
+| `weekly_template_name` | `weekly_summary` |
 | `template_language` | `en` |
 | `pin` | The PIN you chose in step 5 (kept here just so you don't lose it) |
 
 ### 4. Schedule it
 
 ```bash
-cp com.williamtobin.assignment-reminder.plist ~/Library/LaunchAgents/
+cp com.williamtobin.assignment-reminder.plist com.williamtobin.assignment-reminder.weekly.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.weekly.plist
 ```
 
-The `.plist` has absolute paths (`/usr/local/bin/node` and `/Users/william.tobin/...`). Change them if your setup is different. Run `which node` to find the right Node path.
+Each `.plist` has absolute paths (`/usr/local/bin/node` and `/Users/william.tobin/...`). Change them if your setup is different. Run `which node` to find the right Node path.
 
 ---
 
@@ -150,8 +164,8 @@ The `.plist` has absolute paths (`/usr/local/bin/node` and `/Users/william.tobin
 | `(#133010) Account not registered` | Do step 5 (register the sender number). |
 | `(#132001) Template name does not exist` | The template isn't approved yet, or the name or language in `config.json` doesn't match. |
 | `(#190) Invalid OAuth access token` | The token was revoked or copied wrong. Generate a new one (step 4). |
-| No message, and the log says "Nothing due tomorrow" | Working as intended 🎉 |
-| No message, and nothing in the log | The Mac was switched off at 14:30. launchd only catches up on runs missed while the Mac was asleep, not while it was off. |
+| No message, and the log says "Nothing due tomorrow" or "Nothing due in the next 7 days" | Working as intended 🎉 |
+| No message, and nothing in the log | The Mac was switched off at the scheduled time. launchd only catches up on runs missed while the Mac was asleep, not while it was off. |
 
 ---
 
@@ -160,3 +174,4 @@ The `.plist` has absolute paths (`/usr/local/bin/node` and `/Users/william.tobin
 - **Cost:** sending Utility template messages to yourself costs nothing or close to nothing at this volume, but Meta's pricing can change.
 - **Privacy:** your Moodle token and WhatsApp token never leave your Mac, except to talk to Moodle and Meta directly.
 - **Time zone:** "tomorrow" and the times in the message use `Europe/Madrid`. Change `TIMEZONE` at the top of `remind.js` if you need another one.
+- **Already submitted?** No reminder. Moodle only reports work you still have to do, so anything you hand in early is skipped automatically.

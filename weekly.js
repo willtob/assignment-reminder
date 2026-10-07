@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Sends a WhatsApp message (official WhatsApp Cloud API) for every Moodle assignment due tomorrow.
-// Run with --dry-run to print the messages instead of sending them.
+// Sends one WhatsApp message (official WhatsApp Cloud API) listing every Moodle assignment due in the next 7 days.
+// Scheduled for Saturdays at 10:00, so each summary covers Saturday 10:00 up to the next Saturday 10:00.
+// Run with --dry-run to print the message instead of sending it.
 
 const fs = require('fs');
 const os = require('os');
@@ -9,6 +10,8 @@ const path = require('path');
 const DRY_RUN = process.argv.includes('--dry-run');
 const TIMEZONE = 'Europe/Madrid';
 const GRAPH_API_URL = 'https://graph.facebook.com/v25.0';
+const DAYS_AHEAD = 7;
+const MAX_LIST_LENGTH = 900; // WhatsApp allows 1024 characters for the whole message, so leave room for the template text
 
 // Moodle login (written by ~/moodle-mcp/setup.js)
 const moodleConfig = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.moodle-mcp', 'config.json'), 'utf8'));
@@ -19,12 +22,12 @@ const MOODLE_TOKEN = moodleConfig.token;
 const whatsappConfig = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
 const WHATSAPP_TOKEN = whatsappConfig.access_token;
 const PHONE_NUMBER_ID = whatsappConfig.phone_number_id;
-const SEND_TO = whatsappConfig.send_to;                     // your number, digits only, e.g. 34612345678
-const TEMPLATE_NAME = whatsappConfig.template_name;         // e.g. assignment_reminder
-const TEMPLATE_LANGUAGE = whatsappConfig.template_language; // e.g. en
+const SEND_TO = whatsappConfig.send_to;                            // your number, digits only, e.g. 34612345678
+const TEMPLATE_NAME = whatsappConfig.weekly_template_name;         // e.g. weekly_summary
+const TEMPLATE_LANGUAGE = whatsappConfig.template_language;        // e.g. en
 
 async function main() {
-  console.log('--- ' + new Date().toLocaleString('en-GB', { timeZone: TIMEZONE }) + ' ---');
+  console.log('--- weekly summary, ' + new Date().toLocaleString('en-GB', { timeZone: TIMEZONE }) + ' ---');
 
   // 0. Stop early with a clear message if a setting is missing
   if (!MOODLE_URL || !MOODLE_TOKEN) {
@@ -34,7 +37,7 @@ async function main() {
     throw new Error('config.json is missing a WhatsApp setting (compare it with config.example.json)');
   }
 
-  // 1. Ask Moodle for everything due in the next 3 days
+  // 1. Ask Moodle for everything due in the next 7 days
   //    (these are "action events": things you still have to do, so work you've already submitted is left out)
   const now = Math.floor(Date.now() / 1000);
   const body = new URLSearchParams();
@@ -42,7 +45,7 @@ async function main() {
   body.append('wsfunction', 'core_calendar_get_action_events_by_timesort');
   body.append('moodlewsrestformat', 'json');
   body.append('timesortfrom', String(now));
-  body.append('timesortto', String(now + 3 * 86400));
+  body.append('timesortto', String(now + DAYS_AHEAD * 86400));
   body.append('limitnum', '50');
 
   const moodleResponse = await fetch(MOODLE_URL + '/webservice/rest/server.php', { method: 'POST', body: body });
@@ -55,29 +58,16 @@ async function main() {
   }
   const events = moodleData.events || [];
 
-  // 2. Work out tomorrow's date in Madrid, e.g. "2026-10-07"
-  const dateFormat = new Intl.DateTimeFormat('en-CA', { timeZone: TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' });
-  const timeFormat = new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, hour: '2-digit', minute: '2-digit' });
-  const tomorrow = dateFormat.format(new Date(Date.now() + 86400 * 1000));
-
-  // 3. Keep only the events whose due date is tomorrow
-  const dueTomorrow = [];
-  for (const event of events) {
-    const dueDate = dateFormat.format(new Date(event.timesort * 1000));
-    if (dueDate === tomorrow) {
-      dueTomorrow.push(event);
-    }
-  }
-
-  if (dueTomorrow.length === 0) {
-    console.log('Nothing due tomorrow (' + tomorrow + ').');
+  if (events.length === 0) {
+    console.log('Nothing due in the next ' + DAYS_AHEAD + ' days.');
     return;
   }
 
-  // 4. Send one WhatsApp message per assignment.
-  //    If one fails, keep going with the others and report the failure at the end.
-  let failures = 0;
-  for (const event of dueTomorrow) {
+  // 2. Turn each assignment into one line, e.g. "Mon 12 Oct 14:00 Homework 202 (Corporate Finance)"
+  //    Moodle already returns them sorted by due date, soonest first.
+  const whenFormat = new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const lines = [];
+  for (const event of events) {
     let assignmentName = event.activityname || event.name;
     let courseName = event.course ? event.course.fullname : 'Moodle';
 
@@ -101,50 +91,64 @@ async function main() {
       courseName = fullCourseName;
     }
 
-    const dueTime = timeFormat.format(new Date(event.timesort * 1000));
+    // "Tue, 13 Oct, 14:00" -> "Tue 13 Oct 14:00"
+    const when = whenFormat.format(new Date(event.timesort * 1000)).replace(/,/g, '');
 
-    console.log('Due tomorrow: ' + assignmentName + ' | ' + courseName + ' | ' + dueTime);
-    if (DRY_RUN) {
-      continue;
-    }
-
-    const message = {
-      messaging_product: 'whatsapp',
-      to: SEND_TO,
-      type: 'template',
-      template: {
-        name: TEMPLATE_NAME,
-        language: { code: TEMPLATE_LANGUAGE },
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: assignmentName },
-              { type: 'text', text: courseName },
-              { type: 'text', text: dueTime },
-            ],
-          },
-        ],
-      },
-    };
-
-    const whatsappResponse = await fetch(GRAPH_API_URL + '/' + PHONE_NUMBER_ID + '/messages', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + WHATSAPP_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify(message),
-    });
-    const whatsappData = await whatsappResponse.json();
-    if (!whatsappResponse.ok) {
-      console.error('  NOT sent, WhatsApp error: ' + JSON.stringify(whatsappData.error || whatsappData));
-      failures = failures + 1;
-      continue;
-    }
-    console.log('  sent, message id ' + whatsappData.messages[0].id);
+    lines.push(when + ' ' + assignmentName + ' (' + courseName + ')');
+    console.log('Due this week: ' + lines[lines.length - 1]);
   }
 
-  if (failures > 0) {
-    throw new Error(failures + ' of ' + dueTomorrow.length + ' message(s) failed to send');
+  // 3. Join the lines into one value. WhatsApp doesn't allow line breaks inside a template value,
+  //    so the assignments are separated with " • ". If the list is too long, cut it and say how many are left out.
+  let list = '';
+  let included = 0;
+  for (const line of lines) {
+    const next = included === 0 ? line : list + ' • ' + line;
+    if (next.length > MAX_LIST_LENGTH) {
+      break;
+    }
+    list = next;
+    included = included + 1;
   }
+  if (included < lines.length) {
+    list = list + ' • …and ' + (lines.length - included) + ' more, check Moodle';
+  }
+
+  if (DRY_RUN) {
+    console.log('Would send: 📅 Week ahead: you have ' + lines.length + ' assignment(s) due in the next 7 days: ' + list + '. Good luck!');
+    return;
+  }
+
+  // 4. Send the summary as one WhatsApp message
+  const message = {
+    messaging_product: 'whatsapp',
+    to: SEND_TO,
+    type: 'template',
+    template: {
+      name: TEMPLATE_NAME,
+      language: { code: TEMPLATE_LANGUAGE },
+      components: [
+        {
+          type: 'body',
+          parameters: [
+            { type: 'text', text: String(lines.length) },
+            { type: 'text', text: list },
+          ],
+        },
+      ],
+    },
+  };
+
+  const whatsappResponse = await fetch(GRAPH_API_URL + '/' + PHONE_NUMBER_ID + '/messages', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + WHATSAPP_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify(message),
+  });
+  const whatsappData = await whatsappResponse.json();
+  if (!whatsappResponse.ok) {
+    throw new Error('WhatsApp error: ' + JSON.stringify(whatsappData.error || whatsappData));
+  }
+  console.log('  sent, message id ' + whatsappData.messages[0].id);
 }
 
 main().catch((error) => {
