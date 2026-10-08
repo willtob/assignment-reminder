@@ -35,4 +35,15 @@ echo "Tunnel: $URL"
 node connect-webhook.js "$URL" || exit 1
 
 echo "Ready. Text the bot \"help\" on WhatsApp. Press Ctrl+C to stop."
-wait $BOT_PID
+
+# Keep running while both are alive. If either one dies, say which and stop the other.
+# (kill -0 sends no signal; it only checks that the process still exists.)
+while kill -0 $BOT_PID 2>/dev/null && kill -0 $TUNNEL_PID 2>/dev/null; do
+  sleep 5
+done
+if ! kill -0 $TUNNEL_PID 2>/dev/null; then
+  echo "The tunnel stopped (see tunnel.log). Run start-bot.sh again."
+else
+  echo "The bot stopped (see the error above). Run start-bot.sh again."
+fi
+exit 1

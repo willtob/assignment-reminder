@@ -36,15 +36,18 @@ async function main() {
   body.append('fields', 'messages');
   body.append('access_token', APP_ID + '|' + APP_SECRET); // an "app access token"
 
+  const ATTEMPTS = 6;
   let connected = false;
-  for (let attempt = 1; attempt <= 6 && !connected; attempt++) {
+  for (let attempt = 1; attempt <= ATTEMPTS && !connected; attempt++) {
     const response = await fetch(GRAPH_API_URL + '/' + APP_ID + '/subscriptions', { method: 'POST', body: body });
     const data = await response.json();
     if (response.ok && data.success) {
       connected = true;
     } else {
       console.log('  attempt ' + attempt + ' failed: ' + (data.error ? data.error.message : JSON.stringify(data)));
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+      if (attempt < ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
     }
   }
   if (!connected) {

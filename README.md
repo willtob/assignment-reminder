@@ -21,8 +21,8 @@ A small script on my Mac checks ESADE's Moodle (eCampus) and sends me **one What
 
 | You send | It replies with |
 |---|---|
-| `tomorrow` | Everything due tomorrow |
-| `week` (or `due`) | Everything due in the next 7 days |
+| `due` | The same as the daily message: overdue work, plus anything due today or tomorrow |
+| `week` | The same as the Saturday message: overdue work, plus the next 7 days |
 | `grades` | Your overall grade in each course |
 | anything else | The list of commands |
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Two-way WhatsApp bot (stage 1: fixed commands, no AI).
-// Text the bot "tomorrow", "week" or "grades" and it replies with your Moodle info.
+// Text the bot "due", "week" or "grades" and it replies with your Moodle info.
 //
 // Meta sends every incoming WhatsApp message to this server as a "webhook" (an HTTP POST).
 // start-bot.sh runs this server, opens a public tunnel to it and tells Meta the tunnel's address.
@@ -10,17 +10,12 @@
 const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { TIMEZONE, callMoodle, cleanCourseName, getDeadlines } = require('./moodle');
 
 const PORT = 3000;
-const TIMEZONE = 'Europe/Madrid';
 const GRAPH_API_URL = 'https://graph.facebook.com/v25.0';
-
-// Moodle login (written by ~/moodle-mcp/setup.js)
-const moodleConfig = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.moodle-mcp', 'config.json'), 'utf8'));
-const MOODLE_URL = moodleConfig.url.replace(/\/+$/, '');
-const MOODLE_TOKEN = moodleConfig.token;
+const REMEMBERED_MESSAGES = 100; // how many message IDs to remember for spotting duplicates
 
 // WhatsApp settings (see config.example.json)
 const whatsappConfig = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
@@ -31,8 +26,8 @@ const VERIFY_TOKEN = whatsappConfig.webhook_verify_token;       // shared passwo
 const APP_SECRET = whatsappConfig.app_secret;                   // used to check that a POST really came from Meta
 
 const HELP_TEXT = 'Commands:\n' +
-  '• tomorrow: what is due tomorrow\n' +
-  '• week: what is due in the next 7 days\n' +
+  '• due: overdue work, plus what is due today or tomorrow\n' +
+  '• week: overdue work, plus the next 7 days\n' +
   '• grades: your course grades\n' +
   '• help: this list';
 
@@ -40,84 +35,26 @@ const HELP_TEXT = 'Commands:\n' +
 const answeredMessageIds = new Set();
 
 
-// ---------- Moodle ----------
-
-// Calls one Moodle web-service function and returns its JSON answer
-async function callMoodle(functionName, params) {
-  const body = new URLSearchParams();
-  body.append('wstoken', MOODLE_TOKEN);
-  body.append('wsfunction', functionName);
-  body.append('moodlewsrestformat', 'json');
-  for (const key in params) {
-    body.append(key, String(params[key]));
-  }
-
-  const response = await fetch(MOODLE_URL + '/webservice/rest/server.php', { method: 'POST', body: body });
-  if (!response.ok) {
-    throw new Error('Moodle returned HTTP ' + response.status);
-  }
-  const data = await response.json();
-  if (data && data.exception) {
-    throw new Error('Moodle error: ' + data.message);
-  }
-  return data;
-}
-
-// "2026-27- BBA-DBAI-GBL Corporate Finance &amp; Valuation Sec: A" -> "Corporate Finance & Valuation"
-// (same clean-up as remind.js)
-function cleanCourseName(name) {
-  name = name.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#039;/g, "'");
-  name = name.replace(/\s+/g, ' ').trim();
-  const fullName = name;
-  name = name.replace(/^\d{4}(-\d{2,4})?-?\s*/, '');
-  name = name.replace(/^[A-Z&]+(-[A-Z]+)+\s+/, '');
-  name = name.replace(/\s+(Sec|GC):.*$/, '');
-  name = name.replace(/\s+-\s+Bachelor\b.*$/, '');
-  if (name === '') {
-    name = fullName;
-  }
-  return name;
-}
-
-
 // ---------- Commands ----------
 
-// "tomorrow" and "week": list assignments due in the next few days
-async function deadlinesReply(days, onlyTomorrow) {
-  const now = Math.floor(Date.now() / 1000);
-  const data = await callMoodle('core_calendar_get_action_events_by_timesort', {
-    timesortfrom: now,
-    timesortto: now + days * 86400,
-    limitnum: 50,
-  });
-  let events = data.events || [];
-
-  const dateFormat = new Intl.DateTimeFormat('en-CA', { timeZone: TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' });
-  const whenFormat = new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-
-  if (onlyTomorrow) {
-    const tomorrow = dateFormat.format(new Date(Date.now() + 86400 * 1000));
-    const dueTomorrow = [];
-    for (const event of events) {
-      if (dateFormat.format(new Date(event.timesort * 1000)) === tomorrow) {
-        dueTomorrow.push(event);
-      }
-    }
-    events = dueTomorrow;
+// "due" and "week": the same deadlines the scheduled messages use, one block per assignment.
+// Normal replies (unlike templates) may contain line breaks.
+async function deadlinesReply(scope) {
+  const deadlines = await getDeadlines(scope);
+  if (deadlines.length === 0) {
+    return 'Nothing due 🎉';
   }
 
-  if (events.length === 0) {
-    return onlyTomorrow ? 'Nothing due tomorrow 🎉' : 'Nothing due in the next ' + days + ' days 🎉';
+  const blocks = [];
+  for (const item of deadlines) {
+    blocks.push(
+      '📌 *' + item.assignmentName + '*\n' +
+      '📘 _' + item.courseName + '_\n' +
+      '⏰ ' + item.deadline + '\n' +
+      item.link
+    );
   }
-
-  let reply = onlyTomorrow ? '📚 Due tomorrow:' : '📅 Due in the next ' + days + ' days:';
-  for (const event of events) {
-    const assignmentName = (event.activityname || event.name).replace(/&amp;/g, '&');
-    const courseName = event.course ? cleanCourseName(event.course.fullname) : 'Moodle';
-    const when = whenFormat.format(new Date(event.timesort * 1000)).replace(/,/g, '');
-    reply = reply + '\n• ' + when + ': ' + assignmentName + ' (' + courseName + ')';
-  }
-  return reply;
+  return blocks.join('\n\n');
 }
 
 // "grades": the overall grade in each course that has one
@@ -151,11 +88,11 @@ async function gradesReply() {
 // Turns whatever you texted into a reply
 async function replyTo(text) {
   const command = text.trim().toLowerCase();
-  if (command === 'tomorrow') {
-    return deadlinesReply(2, true);
+  if (command === 'due' || command === 'tomorrow') {
+    return deadlinesReply('soon');
   }
-  if (command === 'week' || command === 'due') {
-    return deadlinesReply(7, false);
+  if (command === 'week') {
+    return deadlinesReply('week');
   }
   if (command === 'grades') {
     return gradesReply();
@@ -180,6 +117,18 @@ async function sendWhatsApp(text) {
   }
 }
 
+// Checks Meta's signature: an HMAC of the exact bytes received, made with your app secret.
+// timingSafeEqual compares in constant time, so an attacker can't guess the signature
+// byte by byte by measuring how long the comparison takes.
+function hasValidSignature(rawBody, signatureHeader) {
+  const expected = Buffer.from('sha256=' + crypto.createHmac('sha256', APP_SECRET).update(rawBody).digest('hex'));
+  const received = Buffer.from(signatureHeader || '');
+  if (received.length !== expected.length) {
+    return false; // timingSafeEqual only compares equal lengths
+  }
+  return crypto.timingSafeEqual(received, expected);
+}
+
 // Handles one POST from Meta, after the signature has been checked
 async function handleWebhook(body) {
   // A webhook can be a new message, or just a "delivered"/"read" receipt. We only want messages.
@@ -197,6 +146,10 @@ async function handleWebhook(body) {
     return; // Meta delivered this one twice
   }
   answeredMessageIds.add(message.id);
+  if (answeredMessageIds.size > REMEMBERED_MESSAGES) {
+    // A Set keeps insertion order, so the first value is the oldest one
+    answeredMessageIds.delete(answeredMessageIds.values().next().value);
+  }
 
   if (message.type !== 'text') {
     await sendWhatsApp('I only understand text for now.\n\n' + HELP_TEXT);
@@ -251,10 +204,8 @@ function startServer() {
     request.on('end', () => {
       const rawBody = Buffer.concat(chunks);
 
-      // Meta signs every POST with your app secret. If the signature doesn't match,
-      // someone else sent it, so ignore it.
-      const expectedSignature = 'sha256=' + crypto.createHmac('sha256', APP_SECRET).update(rawBody).digest('hex');
-      if (request.headers['x-hub-signature-256'] !== expectedSignature) {
+      // If the signature doesn't match, someone other than Meta sent it, so ignore it
+      if (!hasValidSignature(rawBody, request.headers['x-hub-signature-256'])) {
         console.log('Rejected a request with a bad signature');
         response.statusCode = 401;
         response.end();
@@ -264,7 +215,14 @@ function startServer() {
       // Say "got it" straight away. If Meta waits too long it sends the message again.
       response.end();
 
-      handleWebhook(JSON.parse(rawBody)).catch((error) => console.error(error.message));
+      let body;
+      try {
+        body = JSON.parse(rawBody);
+      } catch (error) {
+        console.error('Ignored a request that was not valid JSON');
+        return;
+      }
+      handleWebhook(body).catch((error) => console.error(error.message));
     });
   });
 
