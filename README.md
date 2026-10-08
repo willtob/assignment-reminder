@@ -50,6 +50,7 @@ The script has **no dependencies**. It's plain Node.js (v18 or newer), using the
 | File | What it is |
 |---|---|
 | `remind.js` | Reads Moodle and sends one message per assignment. `--week` looks 7 days ahead instead of 1. |
+| `moodle.js` | Shared Moodle code: fetches deadlines, decides which ones count (overdue, today, tomorrow, week) and words them. |
 | `config.example.json` | Template for your settings. Copy it to `config.json` and fill it in. |
 | `config.json` | Your real settings and secrets. **Not in git** (see `.gitignore`). |
 | `com.williamtobin.assignment-reminder.plist` | launchd schedule for `remind.js` (daily at 14:30). |
