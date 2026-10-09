@@ -2,7 +2,7 @@
 
 Get WhatsApp messages about upcoming Moodle assignments.
 
-A small script on my Mac checks ESADE's Moodle (eCampus) and sends me **one WhatsApp message per assignment** I still have to do:
+A small script running on **GitHub Actions** (so my Mac can be off) checks ESADE's Moodle (eCampus) and sends me **one WhatsApp message per assignment** I still have to do:
 
 > 📌 Assignment: **Block2_Compulsory Homework 202(Springs)**
 > 📘 Course: _Corporate Finance & Financial Valuation_
@@ -23,8 +23,8 @@ A small script on my Mac checks ESADE's Moodle (eCampus) and sends me **one What
 
 ```
  ┌────────────┐   14:30 every day   ┌──────────────┐   "what's due?"   ┌──────────┐
- │  macOS     │ ──────────────────▶ │  remind.js   │ ────────────────▶ │  Moodle  │
- │  launchd   │                     │              │ ◀──────────────── │ eCampus  │
+ │  GitHub    │ ──────────────────▶ │  remind.js   │ ────────────────▶ │  Moodle  │
+ │  Actions   │                     │              │ ◀──────────────── │ eCampus  │
  └────────────┘                     │              │   list of events  └──────────┘
                                     │              │
                                     │              │   template msg    ┌──────────┐
@@ -33,11 +33,13 @@ A small script on my Mac checks ESADE's Moodle (eCampus) and sends me **one What
                                                                        └──────────┘
 ```
 
-1. **launchd**, the scheduler built into macOS, starts `remind.js` at 14:30. If the Mac is asleep at that time, the job runs as soon as it wakes up.
+1. **GitHub Actions** starts `remind.js` at 14:30 on one of GitHub's servers (see `.github/workflows/reminders.yml`). It first rebuilds the two settings files from the repository's encrypted secrets.
 2. **`remind.js`** asks Moodle for every deadline from 7 days ago to 7 days ahead. It keeps the ones due later today or tomorrow (Madrid time), plus overdue assignments.
 3. For each one, it sends a message through Meta's official **WhatsApp Cloud API**, using the pre-approved `deadline` message template.
 
-On Saturdays, launchd runs `remind.js --week`, which keeps everything due in the next 7 days instead of just today and tomorrow.
+On Saturdays at 10:00 it runs `remind.js --week`, which keeps everything due in the next 7 days instead of just today and tomorrow.
+
+**Summer and winter time:** GitHub schedules only use UTC, but Madrid is UTC+2 in summer and UTC+1 in winter. So the workflow has two triggers per reminder, one for each season, and its first step skips whichever one doesn't match Madrid's current offset. You get exactly one run per day all year, with no edits when the clocks change.
 
 Why one message per assignment? WhatsApp doesn't allow line breaks inside a template value, so a single message with a readable list isn't possible.
 
@@ -53,44 +55,43 @@ The script has **no dependencies**. It's plain Node.js (v18 or newer), using the
 | `moodle.js` | Shared Moodle code: fetches deadlines, decides which ones count (overdue, today, tomorrow, week) and words them. |
 | `config.example.json` | Template for your settings. Copy it to `config.json` and fill it in. |
 | `config.json` | Your real settings and secrets. **Not in git** (see `.gitignore`). |
-| `com.williamtobin.assignment-reminder.plist` | launchd schedule for `remind.js` (daily at 14:30). |
-| `com.williamtobin.assignment-reminder.weekly.plist` | launchd schedule for `remind.js --week` (Saturdays at 10:00). |
-| `reminder.log` | Output from every run. Created automatically and not in git. |
+| `.github/workflows/reminders.yml` | The schedule: runs `remind.js` daily at 14:30 and `remind.js --week` on Saturdays at 10:00 (Madrid time). |
+| `com.williamtobin.assignment-reminder*.plist` | Only for running on your Mac instead of GitHub (see the end of the setup section). |
 
 ---
 
 ## Everyday use
 
-**See what it would send, without sending anything:**
+**Run it on GitHub by hand** (dry run by default; add `-f dry_run=false` to really send):
+```bash
+gh workflow run reminders.yml -f mode=daily     # or mode=weekly
+```
+You can also do this from the website: *Actions → Reminders → Run workflow*.
+
+**Check what happened on past runs:**
+```bash
+gh run list --workflow reminders.yml    # list of runs
+gh run view --log                       # pick one and see its output
+```
+GitHub emails you when a run fails.
+
+**See what it would send, from your Mac, without sending anything:**
 ```bash
 node ~/assignment-reminder/remind.js --dry-run          # daily
 node ~/assignment-reminder/remind.js --week --dry-run   # weekly
 ```
 
-**Send for real, right now:**
+**Send for real from your Mac, right now:**
 ```bash
 node ~/assignment-reminder/remind.js
 node ~/assignment-reminder/remind.js --week
 ```
 
-**Check what happened on past runs:**
-```bash
-cat ~/assignment-reminder/reminder.log
-```
+**Change when it runs:** edit the `cron` lines in `.github/workflows/reminders.yml`. The times are in **UTC**, and each reminder has a summer line and a winter line. Change both, and update the matching lines in the `case` block of the "Decide" step so they stay identical. For example, 15:00 Madrid is `0 13 * * *` (summer) and `0 14 * * *` (winter).
 
-**Change when it runs:** edit `Hour` / `Minute` (and `Weekday` for the weekly one: 0 or 7 = Sunday, 6 = Saturday) in the `.plist`, then reload it. For example, for the daily reminder:
-```bash
-cp com.williamtobin.assignment-reminder.plist ~/Library/LaunchAgents/
-launchctl bootout   gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.plist
-```
-For the weekly summary, run the same commands with `com.williamtobin.assignment-reminder.weekly.plist`.
+**Turn it off:** *Actions → Reminders → ⋯ → Disable workflow*, or `gh workflow disable reminders.yml`.
 
-**Turn one off:**
-```bash
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.plist          # daily
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.weekly.plist   # weekly
-```
+**Changed a setting in `config.json`?** Upload it to GitHub again (see step 4 of the setup).
 
 ---
 
@@ -155,13 +156,30 @@ Then fill in `config.json`:
 | `template_language` | `en` |
 | `pin` | The PIN you chose in step 5 (kept here just so you don't lose it) |
 
-### 4. Schedule it
+### 4. Schedule it on GitHub
+
+The workflow is already in the repo. It only needs your settings, stored as two encrypted **repository secrets**. These commands copy just the keys the reminder needs, without printing them:
+
+```bash
+node -e 'const c = require("./config.json"); process.stdout.write(JSON.stringify({ access_token: c.access_token, phone_number_id: c.phone_number_id, send_to: c.send_to, template_name: c.template_name, template_language: c.template_language }))' | gh secret set WHATSAPP_CONFIG
+node -e 'const m = require(require("os").homedir() + "/.moodle-mcp/config.json"); process.stdout.write(JSON.stringify({ url: m.url, token: m.token }))' | gh secret set MOODLE_CONFIG
+```
+
+Then test it with a dry run: `gh workflow run reminders.yml -f mode=weekly`.
+
+GitHub Actions is free for this. Each run takes well under a minute, and private repositories get 2,000 free minutes a month.
+
+### Alternative: run it on your Mac instead
+
+If you'd rather not use GitHub, macOS's built-in scheduler, **launchd**, can run it. It only works while the Mac is on, and output goes to `reminder.log`. **Don't run both**, or you'll get every message twice.
 
 ```bash
 cp com.williamtobin.assignment-reminder.plist com.williamtobin.assignment-reminder.weekly.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.weekly.plist
 ```
+
+To stop it, run `launchctl bootout` with the same paths and delete the two files from `~/Library/LaunchAgents`.
 
 Each `.plist` has absolute paths (`/usr/local/bin/node` and `/Users/william.tobin/...`). Change them if your setup is different. Run `which node` to find the right Node path.
 
@@ -175,14 +193,16 @@ Each `.plist` has absolute paths (`/usr/local/bin/node` and `/Users/william.tobi
 | `(#133010) Account not registered` | Do step 5 (register the sender number). |
 | `(#132001) Template name does not exist` | The template isn't approved yet, or the name or language in `config.json` doesn't match. |
 | `(#190) Invalid OAuth access token` | The token was revoked or copied wrong. Generate a new one (step 4). |
-| No message, and the log says "Nothing to remind you about." | Working as intended 🎉 |
-| No message, and nothing in the log | The Mac was switched off at the scheduled time. launchd only catches up on runs missed while the Mac was asleep, not while it was off. |
+| No message, and the run's output says "Nothing to remind you about." | Working as intended 🎉 |
+| The message arrived a bit late | GitHub sometimes starts scheduled runs 5 to 30 minutes late, especially at busy times. That's normal. |
+| A run says "Skipping: this trigger is for Madrid UTC…" | Normal. That's the other season's trigger. |
+| Errors after changing `config.json` or your Moodle password | GitHub still has the old values. Upload the secrets again (setup step 4). |
 
 ---
 
 ## Notes
 
 - **Cost:** sending Utility template messages to yourself costs nothing or close to nothing at this volume, but Meta's pricing can change.
-- **Privacy:** your Moodle token and WhatsApp token never leave your Mac, except to talk to Moodle and Meta directly.
-- **Time zone:** "tomorrow" and the times in the message use `Europe/Madrid`. Change `TIMEZONE` at the top of `remind.js` if you need another one.
+- **Privacy:** your Moodle token and WhatsApp token are stored as encrypted GitHub secrets. GitHub hides them in run logs, and they're only used to talk to Moodle and Meta. The repository is private, but anyone you give write access could read them through a workflow.
+- **Time zone:** "tomorrow" and the times in the message use `Europe/Madrid`. Change `TIMEZONE` at the top of `moodle.js` (and the cron times) if you need another one.
 - **Already submitted?** No reminder. Moodle only reports work you still have to do, so anything you hand in early is skipped automatically.
