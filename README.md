@@ -1,8 +1,17 @@
 # 📚 Assignment Reminder
 
-Get WhatsApp messages about upcoming Moodle assignments.
+WhatsApp reminders for my ESADE Moodle (eCampus) assignments, plus a WhatsApp bot I can ask questions about my courses.
 
-A small script running on **GitHub Actions** (so my Mac can be off) checks ESADE's Moodle (eCampus) and sends me **one WhatsApp message per assignment** I still have to do:
+There are two parts:
+
+1. **Reminders.** Every afternoon, I get a WhatsApp message for each assignment that's due soon or overdue. They run on GitHub, so my Mac can be off.
+2. **The bot (optional).** I text a question like *"what are my grades in finance?"* and it looks up the answer in Moodle. It runs on my Mac, so it only works while the Mac is on and the bot is started.
+
+---
+
+## The reminders
+
+A reminder looks like this:
 
 > 📌 Assignment: **Block2_Compulsory Homework 202(Springs)**
 > 📘 Course: _Corporate Finance & Financial Valuation_
@@ -10,152 +19,171 @@ A small script running on **GitHub Actions** (so my Mac can be off) checks ESADE
 > Still not submitted.
 > [ Open in Moodle ]
 
-| When | What it sends |
+| When | What I get |
 |---|---|
-| **Every day at 14:30** | Anything due later today or tomorrow, plus overdue work |
-| **Saturdays at 10:00** | Everything due in the next 7 days, plus overdue work |
+| **Every day at 14:30** | Anything due later today or tomorrow |
+| **Saturdays at 10:00** | Everything due in the next 7 days |
 
-"Overdue work" means **assignments** from the last 7 days that are past their deadline and not submitted. If there's nothing to report, no message is sent.
+Both also include **overdue work**: assignments from the last 7 days that are past their deadline and still not submitted.
 
-**Two-way bot (optional):** while `start-bot.sh` is running, you can text the bot and it replies:
+- **Nothing due?** No message.
+- **Already handed it in?** No reminder for it. Moodle only reports work I still have to do.
+- **Times** are always Madrid time, even when I'm travelling.
 
-| You send | It replies with |
+---
+
+## The bot
+
+### Starting it
+
+On the Mac, in Terminal:
+
+```bash
+~/assignment-reminder/start-bot.sh
+```
+
+Wait until it says **"Ready."** (about 10 to 20 seconds). Then text the bot's WhatsApp number. To stop it, press **Ctrl+C**.
+
+The bot stops when the Terminal window closes or the Mac goes to sleep.
+
+### What to send it
+
+| I send | It replies with |
 |---|---|
-| `due` | The same as the daily message: overdue work, plus anything due today or tomorrow |
-| `week` | The same as the Saturday message: overdue work, plus the next 7 days |
-| `reset` | Starts a new conversation (the AI forgets what you talked about) |
+| `due` | Overdue work, plus anything due today or tomorrow (the same as the daily reminder) |
+| `week` | Overdue work, plus the next 7 days (the same as the Saturday reminder) |
 | `help` | The list of commands |
-| anything else | A question for the AI, e.g. *"what are my grades in finance?"* or *"what feedback did I get on the last finance homework?"* It looks the answer up in Moodle through [moodle-mcp](https://github.com/IsaacAnwar/moodle-mcp). |
+| `reset` | Starts a fresh conversation. The bot forgets what we talked about. |
+| **Anything else** | Treated as a question, and the AI looks up the answer in Moodle |
+
+Example questions:
+
+- *"What are my grades in Programming with Data?"*
+- *"What feedback did I get on the Springs homework?"*
+- *"What's due in statistics this month?"*
+- *"Any new announcements in Software Development?"*
+
+Tips:
+
+- **Grades:** name the course. The bot lists each graded item (homework, exams…) with its mark. It never shows Moodle's overall course total, because that number isn't accurate.
+- **Older courses work too,** e.g. *"my grade in the Computing Foundations final exam"*.
+- **Follow-up questions work.** The bot remembers the last 10 messages, so *"and the exam?"* is fine. Restarting the bot or sending `reset` clears its memory.
+- **It can only read Moodle.** It can't submit, change or download anything.
+- **Only my number gets answers.** Messages from anyone else are ignored.
 
 ---
 
 ## How it works
 
-```
- ┌────────────┐   14:30 every day   ┌──────────────┐   "what's due?"   ┌──────────┐
- │  GitHub    │ ──────────────────▶ │  remind.js   │ ────────────────▶ │  Moodle  │
- │  Actions   │                     │              │ ◀──────────────── │ eCampus  │
- └────────────┘                     │              │   list of events  └──────────┘
-                                    │              │
-                                    │              │   template msg    ┌──────────┐
-                                    │              │ ────────────────▶ │ WhatsApp │ ──▶ 📱
-                                    └──────────────┘                   │ Cloud API│
-                                                                       └──────────┘
-```
-
-1. **GitHub Actions** starts `remind.js` at 14:30 on one of GitHub's servers (see `.github/workflows/reminders.yml`). It first rebuilds the two settings files from the repository's encrypted secrets.
-2. **`remind.js`** asks Moodle for every deadline from 7 days ago to 7 days ahead. It keeps the ones due later today or tomorrow (Madrid time), plus overdue assignments.
-3. For each one, it sends a message through Meta's official **WhatsApp Cloud API**, using the pre-approved `deadline` message template.
-
-On Saturdays at 10:00 it runs `remind.js --week`, which keeps everything due in the next 7 days instead of just today and tomorrow.
-
-**Summer and winter time:** GitHub schedules only use UTC, but Madrid is UTC+2 in summer and UTC+1 in winter. So the workflow has two triggers per reminder, one for each season, and its first step skips whichever one doesn't match Madrid's current offset. You get exactly one run per day all year, with no edits when the clocks change.
-
-Why one message per assignment? WhatsApp doesn't allow line breaks inside a template value, so a single message with a readable list isn't possible.
-
-The bot works the other way round. Meta calls *you*: every message you send to the bot's number is forwarded as an HTTP POST (a **webhook**) to a URL you choose.
+### Reminders
 
 ```
- 📱 "week" ──▶ WhatsApp ──POST──▶ Cloudflare tunnel ──▶ bot.js on your Mac ──▶ Moodle
- 📱 reply  ◀── WhatsApp ◀──────── POST /messages ◀──────────┘
-```
-
-1. **`bot.js`** runs a small web server on `localhost:3000`.
-2. **`cloudflared`** opens a free public HTTPS address (`https://random-words.trycloudflare.com`) that forwards to that server, so Meta can reach your Mac without any router setup.
-3. **`connect-webhook.js`** tells Meta that address. Meta checks it once by sending a GET with the `webhook_verify_token`, which `bot.js` answers.
-4. When a message arrives, `bot.js` checks the `X-Hub-Signature-256` header (signed with your app secret) so nobody else can fake messages. It also ignores any number except yours, works out the reply, and sends it back.
-
-Replies are normal text messages, not templates. After you message a WhatsApp business number, it may answer freely for 24 hours.
-
-**Questions (`ai.js`).** Anything that isn't a command goes to OpenAI, which can use moodle-mcp's tools:
-
-```
- 📱 "my grade in finance?" ──▶ bot.js ──▶ OpenAI: "call get_grades(course: finance)"
+ GitHub Actions ──(14:30)──▶ remind.js ──"what's due?"──▶ Moodle
                                  │
-                                 ├──▶ moodle-mcp (server.js, a child process) ──▶ Moodle
-                                 │
-                                 └──▶ OpenAI: writes the answer ──▶ 📱
+                                 └──one message per assignment──▶ WhatsApp ──▶ 📱
 ```
 
-1. `ai.js` starts `~/moodle-mcp/server.js` in the background and talks to it over stdin/stdout, the same way Claude does (MCP). It asks for the list of tools once.
-2. Your question, the last 10 messages of the conversation and the tool list go to OpenAI.
-3. If OpenAI asks for a tool, `ai.js` runs it in moodle-mcp and sends back the result. This repeats, at most 6 times, until OpenAI answers in text.
+1. At 14:30, **GitHub Actions** runs `remind.js` on one of GitHub's computers.
+2. `remind.js` asks **Moodle** for all deadlines from 7 days ago to 7 days ahead. It keeps the ones that matter today.
+3. For each one, it sends a WhatsApp message through **Meta's official WhatsApp Cloud API**.
 
-The AI can only **read** Moodle. `get_file` and `download_course_files` are left out because they save files onto the computer running the bot. While it works, WhatsApp shows *typing…*. Each question costs a fraction of a cent with a small model.
+On Saturdays, it runs `remind.js --week`, which looks 7 days ahead instead.
 
-The scripts have **no dependencies**. It's plain Node.js (v18 or newer), using the built-in `fetch`.
+**Why one message per assignment?** Businesses can only start a WhatsApp chat using a pre-approved message *template*. Templates don't allow line breaks inside the filled-in parts, so a neat list in one message isn't possible.
+
+**Why does the schedule have two times per reminder?** GitHub schedules use UTC, but Madrid changes between UTC+1 and UTC+2 in summer and winter. So there's a summer trigger and a winter trigger. The first step of the workflow skips whichever one doesn't match the current season. The result is exactly one reminder a day, all year, with nothing to change when the clocks change.
+
+### The bot
+
+The bot works the other way round. Instead of my script contacting WhatsApp, **WhatsApp contacts my Mac** whenever I send the bot a message.
+
+```
+ 📱 "my grades in finance?"
+   │
+   ▼
+ WhatsApp ──▶ Cloudflare tunnel ──▶ bot.js (on my Mac) ──▶ OpenAI: "which Moodle tool do I need?"
+                                       │
+                                       ├──▶ moodle-mcp ──▶ Moodle   (look up the grades)
+                                       │
+ 📱 ◀── WhatsApp ◀── the answer ◀───────┘
+```
+
+`start-bot.sh` starts three things:
+
+1. **`bot.js`**: a small web server on the Mac that receives messages and replies.
+2. **A Cloudflare tunnel**: a free, temporary public web address that leads to that server. WhatsApp needs a public address, and this means no router setup. The address changes every time the bot starts.
+3. **`connect-webhook.js`**: tells Meta the new address, so it knows where to send messages.
+
+Commands like `due` and `week` are answered directly. Everything else goes to **OpenAI** (`ai.js`), which can use the tools from [moodle-mcp](https://github.com/IsaacAnwar/moodle-mcp). These are the same Moodle tools Claude uses. OpenAI picks a tool (for example, "get the grades for Corporate Finance"), `ai.js` runs it, and OpenAI writes the answer from the result. It can repeat this up to 6 times per question. While it works, WhatsApp shows *typing…*.
+
+**Safety:**
+
+- Meta signs every message it sends with the app secret, and the bot rejects anything with a wrong signature, so nobody else can send it fake messages.
+- The bot only answers my own number.
+- The AI can only read Moodle. The two moodle-mcp tools that save files to the computer are switched off.
+
+**Cost:** each question costs a fraction of a cent on OpenAI. Replies are free on WhatsApp, because I texted first.
 
 ---
 
 ## Files
 
-| File | What it is |
+| File | What it does |
 |---|---|
-| `remind.js` | Reads Moodle and sends one message per assignment. `--week` looks 7 days ahead instead of 1. |
-| `moodle.js` | Shared Moodle code: fetches deadlines, decides which ones count (overdue, today, tomorrow, week) and words them. |
-| `config.example.json` | Template for your settings. Copy it to `config.json` and fill it in. |
-| `config.json` | Your real settings and secrets. **Not in git** (see `.gitignore`). |
-| `.github/workflows/reminders.yml` | The schedule: runs `remind.js` daily at 14:30 and `remind.js --week` on Saturdays at 10:00 (Madrid time). |
-| `com.williamtobin.assignment-reminder*.plist` | Only for running on your Mac instead of GitHub (see the end of the setup section). |
-| `bot.js` | Two-way bot. A web server that answers the messages you text it. |
-| `ai.js` | Answers free-form questions with OpenAI and moodle-mcp. |
-| `connect-webhook.js` | Tells Meta the bot's current public address. |
-| `start-bot.sh` | Starts the bot and the tunnel, then connects the webhook. Use this one. |
-| `tunnel.log` | Output from `cloudflared`. Created automatically and not in git. |
+| `remind.js` | Sends the reminders. `--week` looks 7 days ahead, and `--dry-run` prints them instead of sending. |
+| `moodle.js` | Shared Moodle code: gets deadlines and works out which ones are overdue, today, tomorrow or this week. |
+| `bot.js` | The bot: receives WhatsApp messages and replies. |
+| `ai.js` | Answers questions using OpenAI and moodle-mcp. |
+| `start-bot.sh` | Starts the bot, the tunnel and the Meta connection. **Use this to run the bot.** |
+| `connect-webhook.js` | Tells Meta the bot's current address (run by `start-bot.sh`). |
+| `.github/workflows/reminders.yml` | The reminder schedule on GitHub. |
+| `config.example.json` | Template for the settings file. |
+| `config.json` | My real settings and passwords. **Never in git.** |
+| `*.plist` | Only for running the reminders on the Mac instead of GitHub (see the end of the setup). |
+| `tunnel.log` | Output from the tunnel, created automatically. Not in git. |
+
+Everything is plain Node.js (version 18 or newer), with nothing to install with `npm`.
 
 ---
 
-## Everyday use
+## Everyday commands
 
-**Run it on GitHub by hand** (dry run by default; add `-f dry_run=false` to really send):
-```bash
-gh workflow run reminders.yml -f mode=daily     # or mode=weekly
-```
-You can also do this from the website: *Actions → Reminders → Run workflow*.
-
-**Check what happened on past runs:**
-```bash
-gh run list --workflow reminders.yml    # list of runs
-gh run view --log                       # pick one and see its output
-```
-GitHub emails you when a run fails.
-
-**See what it would send, from your Mac, without sending anything:**
+**Check which reminders would be sent right now, without sending them:**
 ```bash
 node ~/assignment-reminder/remind.js --dry-run          # daily
 node ~/assignment-reminder/remind.js --week --dry-run   # weekly
 ```
 
-**Send for real from your Mac, right now:**
-```bash
-node ~/assignment-reminder/remind.js
-node ~/assignment-reminder/remind.js --week
-```
-
-**Change when it runs:** edit the `cron` lines in `.github/workflows/reminders.yml`. The times are in **UTC**, and each reminder has a summer line and a winter line. Change both, and update the matching lines in the `case` block of the "Decide" step so they stay identical. For example, 15:00 Madrid is `0 13 * * *` (summer) and `0 14 * * *` (winter).
-
-**Turn it off:** *Actions → Reminders → ⋯ → Disable workflow*, or `gh workflow disable reminders.yml`.
-
-**Changed a setting in `config.json`?** Upload it to GitHub again (see step 4 of the setup).
-
-**Run the two-way bot** on your Mac (stop it with Ctrl+C):
-```bash
-~/assignment-reminder/start-bot.sh
-```
-
-**Try a bot message without WhatsApp:**
+**Ask the bot something without using WhatsApp** (prints the answer in Terminal):
 ```bash
 node ~/assignment-reminder/bot.js --test week
-node ~/assignment-reminder/bot.js --test "what is due in statistics this month?"   # quotes needed: zsh treats ? as a wildcard
+node ~/assignment-reminder/bot.js --test "what is due in statistics this month?"
 ```
+Keep the quotes: without them, zsh treats `?` as a special character and gives an error.
+
+**Run the reminders on GitHub by hand.** This is a dry run unless you add `-f dry_run=false`:
+```bash
+gh workflow run reminders.yml -f mode=daily     # or mode=weekly
+```
+Or on the website: *Actions → Reminders → Run workflow*.
+
+**See past runs:** `gh run list --workflow reminders.yml`, then `gh run view --log`. GitHub also emails you if a run fails.
+
+**Turn the reminders off:** `gh workflow disable reminders.yml` (or *Actions → Reminders → ⋯ → Disable workflow*).
+
+**Changed `config.json`?** Upload it to GitHub again (setup step 4). Otherwise GitHub keeps using the old settings.
+
+**Change the reminder times:** edit the `cron` lines in `.github/workflows/reminders.yml`. They're in **UTC**, with a summer line and a winter line for each reminder. Change both, plus the matching lines in the "Decide" step. For example, 15:00 Madrid time is `0 13 * * *` in summer and `0 14 * * *` in winter.
 
 ---
 
 ## Setting it up from scratch
 
+You only do this once. Step 2 (Meta) is the long part.
+
 ### 1. Moodle access
 
-The script reuses the login from [moodle-mcp](https://github.com/IsaacAnwar/moodle-mcp). It reads the site URL and token from `~/.moodle-mcp/config.json`. If you don't have that file yet:
+The scripts reuse the Moodle login from [moodle-mcp](https://github.com/IsaacAnwar/moodle-mcp), stored in `~/.moodle-mcp/config.json`. If you don't have that file yet:
 
 ```bash
 node ~/moodle-mcp/setup.js https://ecampus.esade.edu
@@ -163,11 +191,9 @@ node ~/moodle-mcp/setup.js https://ecampus.esade.edu
 
 ### 2. WhatsApp (Meta Cloud API)
 
-This is the long part, but you only do it once.
-
-1. **Create an app.** Go to [developers.facebook.com/apps](https://developers.facebook.com/apps), click *Create App*, pick the *"Connect with customers through WhatsApp"* use case, and connect a business portfolio.
-2. **Get a test number.** In the app, open *Use cases → Connect on WhatsApp → Step 1. Try it out*. This gives you a free sender number, plus its **Phone Number ID** and **WhatsApp Business Account ID**. Add your own phone number as a recipient.
-3. **Create the message template.** In WhatsApp Manager → *Message templates* → *Create template*, choose Category **Utility**, Language **English**, and name it `deadline`:
+1. **Create an app** at [developers.facebook.com/apps](https://developers.facebook.com/apps). Choose *Create App*, then the *"Connect with customers through WhatsApp"* use case, and connect a business portfolio.
+2. **Get a free test number.** In the app, go to *Use cases → Connect on WhatsApp → Step 1. Try it out*. Note the **Phone Number ID** and **WhatsApp Business Account ID**, and add your own phone number as a recipient.
+3. **Create the message template.** In WhatsApp Manager, go to *Message templates → Create template*. Choose **Utility**, **English**, and name it `deadline`.
    - **Body:**
      ```
      📌 Assignment: *{{1}}*
@@ -175,25 +201,23 @@ This is the long part, but you only do it once.
      ⏰ Deadline: {{3}}
      Still not submitted.
      ```
-   - **Button:** *Visit website*, text `Open in Moodle`, dynamic URL `https://ecampus.esade.edu/{{1}}`.
+   - **Button:** *Visit website*, with the text `Open in Moodle` and the dynamic URL `https://ecampus.esade.edu/{{1}}`.
 
-   Submit it for review. Approval usually takes from a few minutes to a few hours, but can take up to 48 hours.
-
-   Meta checks two rules straight away. First, a variable can't be the very first or last thing in the body. Second, a body that's mostly variables is rejected ("too many variables for its length"). That's why the template has labels and the closing line.
+   Approval takes from a few minutes up to 48 hours. Meta rejects a body that starts or ends with a `{{…}}` or that's mostly `{{…}}`s. That's why the template has labels and a last line.
 4. **Get a permanent access token.** In Business Settings → *Users → System users*:
-   - Create a system user (Employee role is fine).
-   - Use *Assign assets* to give it **full control of both the app and the WhatsApp account**. If you only assign the WhatsApp account, the token screen will say "No permissions available".
-   - Click *Generate token*: pick the app, set expiration **Never**, and tick `whatsapp_business_messaging` and `whatsapp_business_management`.
-5. **Register the sender number.** This is a one-time API call that also sets a 6-digit PIN:
+   - Create a system user (the Employee role is fine).
+   - Under *Assign assets*, give it full control of **both the app and the WhatsApp account**. With only the WhatsApp account, the token screen says "No permissions available".
+   - Click *Generate token*. Pick the app, set expiry to **Never**, and tick `whatsapp_business_messaging` and `whatsapp_business_management`.
+5. **Register the sender number.** This is a one-time step that also sets a 6-digit PIN of your choice:
    ```bash
    curl -X POST "https://graph.facebook.com/v25.0/<PHONE_NUMBER_ID>/register" \
      -H "Authorization: Bearer <ACCESS_TOKEN>" \
      -H "Content-Type: application/json" \
      -d '{"messaging_product":"whatsapp","pin":"<6 DIGITS>"}'
    ```
-   If you skip this step, sending fails with `(#133010) Account not registered`.
+   Without this, sending fails with `(#133010) Account not registered`.
 
-### 3. Config
+### 3. The settings file
 
 ```bash
 cp config.example.json config.json
@@ -202,40 +226,40 @@ chmod 600 config.json   # only your user can read it
 
 Then fill in `config.json`:
 
-| Key | Where to find it |
+| Setting | Where to find it |
 |---|---|
-| `access_token` | The system-user token from step 4 |
-| `phone_number_id` | *Try it out* page (the sender's ID, not the phone number itself) |
-| `whatsapp_business_account_id` | *Try it out* page |
+| `access_token` | The token from step 2, part 4 |
+| `phone_number_id` | The *Try it out* page. This is the sender's ID, not the phone number. |
+| `whatsapp_business_account_id` | The *Try it out* page |
 | `send_to` | Your WhatsApp number, digits only with country code, e.g. `34612345678` |
 | `template_name` | `deadline` |
 | `template_language` | `en` |
-| `pin` | The PIN you chose in step 5 (kept here just so you don't lose it) |
-| `app_id` | Bot only. Your app's ID, shown at the top of the app dashboard |
-| `app_secret` | Bot only. *App settings → Basic → App secret → Show* |
-| `webhook_verify_token` | Bot only. Any long random string, e.g. the output of `openssl rand -hex 24` |
-| `openai_api_key` | Bot only. Create one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
-| `openai_model` | Bot only. Which OpenAI model answers questions. Default `gpt-5-mini` |
-| `moodle_mcp_path` | Bot only. Where moodle-mcp's `server.js` is. Leave empty for `~/moodle-mcp/server.js` |
+| `pin` | The PIN from step 2, part 5 (stored here only so you don't lose it) |
+| `app_id` | *Bot only.* The app's ID, shown at the top of the app dashboard |
+| `app_secret` | *Bot only.* *App settings → Basic → App secret → Show* |
+| `webhook_verify_token` | *Bot only.* Any long random text, e.g. from `openssl rand -hex 24` |
+| `openai_api_key` | *Bot only.* Create one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| `openai_model` | *Bot only.* Which OpenAI model to use (default `gpt-5-mini`) |
+| `moodle_mcp_path` | *Bot only.* Leave empty to use `~/moodle-mcp/server.js` |
 
-For the bot you also need `cloudflared`: `brew install cloudflared`.
+The bot also needs the Cloudflare tunnel program: `brew install cloudflared`.
 
-### 4. Schedule it on GitHub
+### 4. Put the settings on GitHub
 
-The workflow is already in the repo. It only needs your settings, stored as two encrypted **repository secrets**. These commands copy just the keys the reminder needs, without printing them:
+The reminder schedule is already in the repo. GitHub only needs your settings, stored as two encrypted **secrets**. These commands copy just the settings the reminders need, without printing them:
 
 ```bash
 node -e 'const c = require("./config.json"); process.stdout.write(JSON.stringify({ access_token: c.access_token, phone_number_id: c.phone_number_id, send_to: c.send_to, template_name: c.template_name, template_language: c.template_language }))' | gh secret set WHATSAPP_CONFIG
 node -e 'const m = require(require("os").homedir() + "/.moodle-mcp/config.json"); process.stdout.write(JSON.stringify({ url: m.url, token: m.token }))' | gh secret set MOODLE_CONFIG
 ```
 
-Then test it with a dry run: `gh workflow run reminders.yml -f mode=weekly`.
+Test it with a dry run: `gh workflow run reminders.yml -f mode=weekly`.
 
-GitHub Actions is free for this. Each run takes well under a minute, and private repositories get 2,000 free minutes a month.
+This is free: each run takes under a minute, and private repositories get 2,000 free minutes a month.
 
-### Alternative: run it on your Mac instead
+### Alternative: run the reminders on the Mac instead
 
-If you'd rather not use GitHub, macOS's built-in scheduler, **launchd**, can run it. It only works while the Mac is on, and output goes to `reminder.log`. **Don't run both**, or you'll get every message twice.
+macOS's built-in scheduler (**launchd**) can run the reminders instead of GitHub. They only arrive if the Mac is on at 14:30, and the output goes to `reminder.log`. **Don't use both**, or every message arrives twice.
 
 ```bash
 cp com.williamtobin.assignment-reminder.plist com.williamtobin.assignment-reminder.weekly.plist ~/Library/LaunchAgents/
@@ -243,33 +267,41 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignm
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.williamtobin.assignment-reminder.weekly.plist
 ```
 
-To stop it, run `launchctl bootout` with the same paths and delete the two files from `~/Library/LaunchAgents`.
-
-Each `.plist` has absolute paths (`/usr/local/bin/node` and `/Users/william.tobin/...`). Change them if your setup is different. Run `which node` to find the right Node path.
+To stop: run `launchctl bootout` with the same paths, then delete the two files from `~/Library/LaunchAgents`. The `.plist` files contain full paths (`/usr/local/bin/node` and `/Users/william.tobin/...`). Change them if yours differ; `which node` shows the right Node path.
 
 ---
 
 ## Troubleshooting
 
-| Problem | Fix |
+**Reminders**
+
+| What you see | What to do |
 |---|---|
-| `Moodle error: Invalid token` | Your Moodle password probably changed. Re-run `node ~/moodle-mcp/setup.js https://ecampus.esade.edu`. |
-| `(#133010) Account not registered` | Do step 5 (register the sender number). |
-| `(#132001) Template name does not exist` | The template isn't approved yet, or the name or language in `config.json` doesn't match. |
-| `(#190) Invalid OAuth access token` | The token was revoked or copied wrong. Generate a new one (step 4). |
-| No message, and the run's output says "Nothing to remind you about." | Working as intended 🎉 |
-| The message arrived a bit late | GitHub sometimes starts scheduled runs 5 to 30 minutes late, especially at busy times. That's normal. |
-| A run says "Skipping: this trigger is for Madrid UTC…" | Normal. That's the other season's trigger. |
-| Errors after changing `config.json` or your Moodle password | GitHub still has the old values. Upload the secrets again (setup step 4). |
-| Bot doesn't answer | It only works while `start-bot.sh` is running and the Mac is awake. Check its output for "Rejected a request with a bad signature" (wrong `app_secret`) or "Ignored a message from another number" (`send_to` doesn't match). |
-| Bot answers "Something went wrong: OpenAI error: …" | Usually a wrong `openai_api_key`, no credit left, or a model name that doesn't exist. The rest of the message says which. |
-| `connect-webhook.js`: "Meta could not reach …" | The new tunnel address wasn't ready yet. Stop and run `start-bot.sh` again. |
+| `Moodle error: Invalid token` | Your Moodle password probably changed. Run `node ~/moodle-mcp/setup.js https://ecampus.esade.edu` again, then upload the secrets again (setup step 4). |
+| `(#133010) Account not registered` | Do setup step 2, part 5. |
+| `(#132001) Template name does not exist` | The template isn't approved yet, or its name or language doesn't match `config.json`. |
+| `(#190) Invalid OAuth access token` | The token was revoked or copied wrong. Make a new one (setup step 2, part 4), then upload the settings again (setup step 4). |
+| "Nothing to remind you about." | Nothing is due. All good 🎉 |
+| The message arrived late | GitHub sometimes starts scheduled runs 5 to 30 minutes late. That's normal. |
+| "Skipping: this trigger is for Madrid UTC…" | Normal. That's the other season's trigger. |
+| Errors after changing `config.json` | GitHub still has the old settings. Upload them again (setup step 4). |
+
+**Bot**
+
+| What you see | What to do |
+|---|---|
+| No reply at all | Is `start-bot.sh` running and did it say "Ready."? Is the Mac awake? |
+| "Rejected a request with a bad signature" in Terminal | `app_secret` in `config.json` is wrong. Copy it again. |
+| "Ignored a message from another number" in Terminal | You texted from a number that isn't `send_to`. |
+| "attempt 1 failed … Failed to resolve host" when starting | Normal. The new tunnel address takes a few seconds to go live, and the next attempt works. |
+| "Meta could not reach …" and the script stops | The tunnel never came up. Press Ctrl+C and run `start-bot.sh` again. |
+| The bot replies "Something went wrong: OpenAI error: …" | Usually a wrong `openai_api_key`, no OpenAI credit left, or a model name that doesn't exist. The message says which. |
+| It can't find a course | Use part of the course's real name as Moodle shows it, e.g. "Statistics and Probability" rather than a topic inside it. |
 
 ---
 
 ## Notes
 
-- **Cost:** sending Utility template messages to yourself costs nothing or close to nothing at this volume, but Meta's pricing can change.
-- **Privacy:** your Moodle token and WhatsApp token are stored as encrypted GitHub secrets. GitHub hides them in run logs, and they're only used to talk to Moodle and Meta. The repository is private, but anyone you give write access could read them through a workflow.
-- **Time zone:** "tomorrow" and the times in the message use `Europe/Madrid`. Change `TIMEZONE` at the top of `moodle.js` (and the cron times) if you need another one.
-- **Already submitted?** No reminder. Moodle only reports work you still have to do, so anything you hand in early is skipped automatically.
+- **Privacy:** the Moodle and WhatsApp passwords for the reminders are stored as encrypted GitHub secrets. GitHub hides them in the logs. The repo is private, but anyone given write access could read them through a workflow. Questions sent to the bot, and the Moodle data needed to answer them, go to OpenAI.
+- **Cost:** reminder messages to yourself cost nothing or close to nothing at this volume, but Meta's prices can change. Bot questions cost a fraction of a cent each on OpenAI.
+- **Time zone:** everything uses `Europe/Madrid`. To change it, edit `TIMEZONE` at the top of `moodle.js` and the cron times.
