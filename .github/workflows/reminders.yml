@@ -1,0 +1,99 @@
+# Runs the WhatsApp reminders on GitHub's servers, so the Mac doesn't have to be on.
+#
+# GitHub schedules only use UTC, but Madrid switches between UTC+2 (summer) and UTC+1 (winter).
+# So each reminder has two triggers, one for each season, and the "Decide" step skips
+# whichever one is wrong today. This also means a late start (GitHub sometimes runs
+# scheduled jobs 5-30 minutes late) never causes a skipped or doubled reminder.
+
+name: Reminders
+
+on:
+  schedule:
+    - cron: '30 12 * * *'   # daily,  14:30 Madrid in summer (CEST, UTC+2)
+    - cron: '30 13 * * *'   # daily,  14:30 Madrid in winter (CET,  UTC+1)
+    - cron: '0 8 * * 6'     # weekly, Saturday 10:00 Madrid in summer
+    - cron: '0 9 * * 6'     # weekly, Saturday 10:00 Madrid in winter
+
+  # Lets you start it by hand: GitHub → Actions → Reminders → Run workflow
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Which reminder
+        type: choice
+        options: [daily, weekly]
+        default: daily
+      dry_run:
+        description: Only print the messages, don't send them
+        type: boolean
+        default: true
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Decide whether to run
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            MODE="$INPUT_MODE"
+            DRY_RUN="$INPUT_DRY_RUN"
+            RUN=true
+          else
+            # Which trigger fired, and which Madrid UTC offset it is meant for
+            case "$SCHEDULE" in
+              "30 12 * * *") MODE=daily;  MEANT_FOR=+0200 ;;
+              "30 13 * * *") MODE=daily;  MEANT_FOR=+0100 ;;
+              "0 8 * * 6")   MODE=weekly; MEANT_FOR=+0200 ;;
+              "0 9 * * 6")   MODE=weekly; MEANT_FOR=+0100 ;;
+            esac
+            DRY_RUN=false
+            MADRID_OFFSET=$(TZ=Europe/Madrid date +%z)   # +0200 in summer, +0100 in winter
+            if [ "$MADRID_OFFSET" = "$MEANT_FOR" ]; then
+              RUN=true
+            else
+              RUN=false
+              echo "Skipping: this trigger is for Madrid UTC$MEANT_FOR, but today Madrid is UTC$MADRID_OFFSET"
+            fi
+          fi
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+
+      - name: Get the code
+        if: steps.decide.outputs.run == 'true'
+        uses: actions/checkout@v7
+
+      - name: Install Node.js
+        if: steps.decide.outputs.run == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # The scripts read their settings from two files that are never in git.
+      # Recreate them from the repository's encrypted secrets (Settings → Secrets → Actions).
+      - name: Write the config files
+        if: steps.decide.outputs.run == 'true'
+        env:
+          MOODLE_CONFIG: ${{ secrets.MOODLE_CONFIG }}
+          WHATSAPP_CONFIG: ${{ secrets.WHATSAPP_CONFIG }}
+        run: |
+          mkdir -p ~/.moodle-mcp
+          printf '%s' "$MOODLE_CONFIG" > ~/.moodle-mcp/config.json
+          printf '%s' "$WHATSAPP_CONFIG" > config.json
+
+      - name: Send the reminders
+        if: steps.decide.outputs.run == 'true'
+        env:
+          MODE: ${{ steps.decide.outputs.mode }}
+          DRY_RUN: ${{ steps.decide.outputs.dry_run }}
+        run: |
+          ARGS=""
+          if [ "$MODE" = "weekly" ]; then ARGS="$ARGS --week"; fi
+          if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node remind.js $ARGS
