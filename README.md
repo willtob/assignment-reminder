@@ -17,14 +17,16 @@ A small script running on **GitHub Actions** (so my Mac can be off) checks ESADE
 
 "Overdue work" means **assignments** from the last 7 days that are past their deadline and not submitted. If there's nothing to report, no message is sent.
 
-**Two-way bot (optional):** while `start-bot.sh` is running, you can text the bot a command and it replies:
+**Two-way bot (optional):** while `start-bot.sh` is running, you can text the bot and it replies:
 
 | You send | It replies with |
 |---|---|
 | `due` | The same as the daily message: overdue work, plus anything due today or tomorrow |
 | `week` | The same as the Saturday message: overdue work, plus the next 7 days |
 | `grades` | Your overall grade in each course |
-| anything else | The list of commands |
+| `reset` | Starts a new conversation (the AI forgets what you talked about) |
+| `help` | The list of commands |
+| anything else | A question for the AI, e.g. *"what feedback did I get on the last finance homework?"* It looks the answer up in Moodle through [moodle-mcp](https://github.com/IsaacAnwar/moodle-mcp). |
 
 ---
 
@@ -66,6 +68,22 @@ The bot works the other way round. Meta calls *you*: every message you send to t
 
 Replies are normal text messages, not templates. After you message a WhatsApp business number, it may answer freely for 24 hours.
 
+**Questions (`ai.js`).** Anything that isn't a command goes to OpenAI, which can use moodle-mcp's tools:
+
+```
+ 📱 "my grade in finance?" ──▶ bot.js ──▶ OpenAI: "call get_grades(course: finance)"
+                                 │
+                                 ├──▶ moodle-mcp (server.js, a child process) ──▶ Moodle
+                                 │
+                                 └──▶ OpenAI: writes the answer ──▶ 📱
+```
+
+1. `ai.js` starts `~/moodle-mcp/server.js` in the background and talks to it over stdin/stdout, the same way Claude does (MCP). It asks for the list of tools once.
+2. Your question, the last 10 messages of the conversation and the tool list go to OpenAI.
+3. If OpenAI asks for a tool, `ai.js` runs it in moodle-mcp and sends back the result. This repeats, at most 6 times, until OpenAI answers in text.
+
+The AI can only **read** Moodle. `get_file` and `download_course_files` are left out because they save files onto the computer running the bot. While it works, WhatsApp shows *typing…*. Each question costs a fraction of a cent with a small model.
+
 The scripts have **no dependencies**. It's plain Node.js (v18 or newer), using the built-in `fetch`.
 
 ---
@@ -81,6 +99,7 @@ The scripts have **no dependencies**. It's plain Node.js (v18 or newer), using t
 | `.github/workflows/reminders.yml` | The schedule: runs `remind.js` daily at 14:30 and `remind.js --week` on Saturdays at 10:00 (Madrid time). |
 | `com.williamtobin.assignment-reminder*.plist` | Only for running on your Mac instead of GitHub (see the end of the setup section). |
 | `bot.js` | Two-way bot. A web server that answers the messages you text it. |
+| `ai.js` | Answers free-form questions with OpenAI and moodle-mcp. |
 | `connect-webhook.js` | Tells Meta the bot's current public address. |
 | `start-bot.sh` | Starts the bot and the tunnel, then connects the webhook. Use this one. |
 | `tunnel.log` | Output from `cloudflared`. Created automatically and not in git. |
@@ -128,6 +147,7 @@ node ~/assignment-reminder/remind.js --week
 **Try a bot message without WhatsApp:**
 ```bash
 node ~/assignment-reminder/bot.js --test week
+node ~/assignment-reminder/bot.js --test what is due in statistics this month?
 ```
 
 ---
@@ -195,6 +215,9 @@ Then fill in `config.json`:
 | `app_id` | Bot only. Your app's ID, shown at the top of the app dashboard |
 | `app_secret` | Bot only. *App settings → Basic → App secret → Show* |
 | `webhook_verify_token` | Bot only. Any long random string, e.g. the output of `openssl rand -hex 24` |
+| `openai_api_key` | Bot only. Create one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| `openai_model` | Bot only. Which OpenAI model answers questions. Default `gpt-5-mini` |
+| `moodle_mcp_path` | Bot only. Where moodle-mcp's `server.js` is. Leave empty for `~/moodle-mcp/server.js` |
 
 For the bot you also need `cloudflared`: `brew install cloudflared`.
 
@@ -240,6 +263,7 @@ Each `.plist` has absolute paths (`/usr/local/bin/node` and `/Users/william.tobi
 | A run says "Skipping: this trigger is for Madrid UTC…" | Normal. That's the other season's trigger. |
 | Errors after changing `config.json` or your Moodle password | GitHub still has the old values. Upload the secrets again (setup step 4). |
 | Bot doesn't answer | It only works while `start-bot.sh` is running and the Mac is awake. Check its output for "Rejected a request with a bad signature" (wrong `app_secret`) or "Ignored a message from another number" (`send_to` doesn't match). |
+| Bot answers "Something went wrong: OpenAI error: …" | Usually a wrong `openai_api_key`, no credit left, or a model name that doesn't exist. The rest of the message says which. |
 | `connect-webhook.js`: "Meta could not reach …" | The new tunnel address wasn't ready yet. Stop and run `start-bot.sh` again. |
 
 ---

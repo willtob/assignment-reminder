@@ -1,35 +1,48 @@
 #!/usr/bin/env node
-// Two-way WhatsApp bot (stage 1: fixed commands, no AI).
-// Text the bot "due", "week" or "grades" and it replies with your Moodle info.
+// Two-way WhatsApp bot.
+// Text it "due", "week" or "grades" for an instant answer (no AI),
+// or ask anything else ("what's my grade in finance?") and OpenAI answers using moodle-mcp (see ai.js).
 //
 // Meta sends every incoming WhatsApp message to this server as a "webhook" (an HTTP POST).
 // start-bot.sh runs this server, opens a public tunnel to it and tells Meta the tunnel's address.
 //
-// Test a command without WhatsApp:  node bot.js --test week
+// Test without WhatsApp:  node bot.js --test week
+//                         node bot.js --test what is due this week in statistics?
 
 const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { TIMEZONE, callMoodle, cleanCourseName, getDeadlines } = require('./moodle');
+const { askAI, resetConversation, stopMoodleMcp } = require('./ai');
 
 const PORT = 3000;
 const GRAPH_API_URL = 'https://graph.facebook.com/v25.0';
 const REMEMBERED_MESSAGES = 100; // how many message IDs to remember for spotting duplicates
+const MAX_WHATSAPP_LENGTH = 4000; // WhatsApp allows 4096 characters per text message; longer replies are split
 
 // WhatsApp settings (see config.example.json)
 const whatsappConfig = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
 const WHATSAPP_TOKEN = whatsappConfig.access_token;
 const PHONE_NUMBER_ID = whatsappConfig.phone_number_id;
-const MY_NUMBER = whatsappConfig.send_to;                       // the bot only ever answers this number
+let MY_NUMBER = whatsappConfig.send_to;                         // the bot only ever answers this number
+if (Array.isArray(MY_NUMBER)) {
+  MY_NUMBER = MY_NUMBER[0];                                     // if send_to is a list, the first number is yours
+}
 const VERIFY_TOKEN = whatsappConfig.webhook_verify_token;       // shared password for Meta's one-time URL check
 const APP_SECRET = whatsappConfig.app_secret;                   // used to check that a POST really came from Meta
 
-const HELP_TEXT = 'Commands:\n' +
+const HELP_TEXT = 'Ask me anything about your Moodle, e.g. _"what did I get in the last finance homework?"_\n\n' +
+  'Quick commands:\n' +
   '• due: overdue work, plus what is due today or tomorrow\n' +
   '• week: overdue work, plus the next 7 days\n' +
   '• grades: your course grades\n' +
+  '• reset: start a new conversation (I forget what we said)\n' +
   '• help: this list';
+
+// Messages are answered one at a time, in order. An AI answer can take a while,
+// and two at once would mix up the conversation.
+let messageQueue = Promise.resolve();
 
 // Message IDs we have already answered. Meta sometimes delivers the same message twice.
 const answeredMessageIds = new Set();
@@ -97,7 +110,15 @@ async function replyTo(text) {
   if (command === 'grades') {
     return gradesReply();
   }
-  return HELP_TEXT;
+  if (command === 'help' || command === 'hi' || command === 'hello') {
+    return HELP_TEXT;
+  }
+  if (command === 'reset') {
+    resetConversation();
+    return 'OK, new conversation 🧹';
+  }
+  // Anything else is a question for the AI
+  return askAI(text.trim());
 }
 
 
@@ -105,15 +126,43 @@ async function replyTo(text) {
 
 // Sends a normal text message. No template is needed because you messaged the bot
 // in the last 24 hours (Meta's "customer service window").
+// Replies longer than WhatsApp's limit are sent as several messages, split at a line break where possible.
 async function sendWhatsApp(text) {
+  let rest = text;
+  while (rest.length > 0) {
+    let part = rest;
+    if (rest.length > MAX_WHATSAPP_LENGTH) {
+      let cut = rest.lastIndexOf('\n', MAX_WHATSAPP_LENGTH);
+      if (cut < MAX_WHATSAPP_LENGTH / 2) {
+        cut = MAX_WHATSAPP_LENGTH; // no good line break, cut mid-line
+      }
+      part = rest.slice(0, cut);
+    }
+    rest = rest.slice(part.length).trimStart();
+
+    const response = await fetch(GRAPH_API_URL + '/' + PHONE_NUMBER_ID + '/messages', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + WHATSAPP_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', to: MY_NUMBER, type: 'text', text: { body: part } }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error('WhatsApp error: ' + JSON.stringify(data.error || data));
+    }
+  }
+}
+
+// Shows your message as read (blue ticks) and "typing…" while the answer is being worked out.
+// WhatsApp hides "typing…" after 25 seconds or when the reply arrives. Not essential, so errors are only logged.
+async function showTyping(messageId) {
   const response = await fetch(GRAPH_API_URL + '/' + PHONE_NUMBER_ID + '/messages', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + WHATSAPP_TOKEN, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messaging_product: 'whatsapp', to: MY_NUMBER, type: 'text', text: { body: text } }),
+    body: JSON.stringify({ messaging_product: 'whatsapp', status: 'read', message_id: messageId, typing_indicator: { type: 'text' } }),
   });
-  const data = await response.json();
   if (!response.ok) {
-    throw new Error('WhatsApp error: ' + JSON.stringify(data.error || data));
+    const data = await response.json();
+    console.error('  could not show typing: ' + JSON.stringify(data.error || data));
   }
 }
 
@@ -157,6 +206,7 @@ async function handleWebhook(body) {
   }
 
   console.log(new Date().toLocaleString('en-GB', { timeZone: TIMEZONE }) + '  received: ' + message.text.body);
+  await showTyping(message.id);
   let reply;
   try {
     reply = await replyTo(message.text.body);
@@ -222,7 +272,10 @@ function startServer() {
         console.error('Ignored a request that was not valid JSON');
         return;
       }
-      handleWebhook(body).catch((error) => console.error(error.message));
+      // Wait for the previous message to be answered first (see messageQueue)
+      messageQueue = messageQueue
+        .then(() => handleWebhook(body))
+        .catch((error) => console.error(error.message));
     });
   });
 
@@ -238,9 +291,13 @@ const testIndex = process.argv.indexOf('--test');
 if (testIndex !== -1) {
   // node bot.js --test week   -> print the reply instead of running the server
   replyTo(process.argv.slice(testIndex + 1).join(' '))
-    .then((reply) => console.log(reply))
+    .then((reply) => {
+      console.log(reply);
+      stopMoodleMcp();
+    })
     .catch((error) => {
       console.error(error.message);
+      stopMoodleMcp();
       process.exit(1);
     });
 } else {
