@@ -147,7 +147,7 @@ node ~/assignment-reminder/remind.js --week
 **Try a bot message without WhatsApp:**
 ```bash
 node ~/assignment-reminder/bot.js --test week
-node ~/assignment-reminder/bot.js --test what is due in statistics this month?
+node ~/assignment-reminder/bot.js --test "what is due in statistics this month?"   # quotes needed: zsh treats ? as a wildcard
 ```
 
 ---

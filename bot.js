@@ -7,7 +7,7 @@
 // start-bot.sh runs this server, opens a public tunnel to it and tells Meta the tunnel's address.
 //
 // Test without WhatsApp:  node bot.js --test week
-//                         node bot.js --test what is due this week in statistics?
+//                         node bot.js --test "what is due this week in statistics?"
 
 const http = require('http');
 const crypto = require('crypto');
