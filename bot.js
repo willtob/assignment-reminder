@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Two-way WhatsApp bot.
-// Text it "due", "week" or "grades" for an instant answer (no AI),
+// Text it "due" or "week" for an instant answer (no AI),
 // or ask anything else ("what's my grade in finance?") and OpenAI answers using moodle-mcp (see ai.js).
 //
 // Meta sends every incoming WhatsApp message to this server as a "webhook" (an HTTP POST).
@@ -13,7 +13,7 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { TIMEZONE, callMoodle, cleanCourseName, getDeadlines } = require('./moodle');
+const { TIMEZONE, getDeadlines } = require('./moodle');
 const { askAI, resetConversation, stopMoodleMcp } = require('./ai');
 
 const PORT = 3000;
@@ -32,11 +32,10 @@ if (Array.isArray(MY_NUMBER)) {
 const VERIFY_TOKEN = whatsappConfig.webhook_verify_token;       // shared password for Meta's one-time URL check
 const APP_SECRET = whatsappConfig.app_secret;                   // used to check that a POST really came from Meta
 
-const HELP_TEXT = 'Ask me anything about your Moodle, e.g. _"what did I get in the last finance homework?"_\n\n' +
+const HELP_TEXT = 'Ask me anything about your Moodle, e.g. _"what are my grades in finance?"_ or _"what did I get in the last finance homework?"_\n\n' +
   'Quick commands:\n' +
   '• due: overdue work, plus what is due today or tomorrow\n' +
   '• week: overdue work, plus the next 7 days\n' +
-  '• grades: your course grades\n' +
   '• reset: start a new conversation (I forget what we said)\n' +
   '• help: this list';
 
@@ -70,34 +69,6 @@ async function deadlinesReply(scope) {
   return blocks.join('\n\n');
 }
 
-// "grades": the overall grade in each course that has one
-async function gradesReply() {
-  const siteInfo = await callMoodle('core_webservice_get_site_info', {});
-  const courses = await callMoodle('core_enrol_get_users_courses', { userid: siteInfo.userid });
-  const gradeData = await callMoodle('gradereport_overview_get_course_grades', { userid: siteInfo.userid });
-
-  let reply = '🎓 Course grades:';
-  let found = 0;
-  for (const grade of gradeData.grades || []) {
-    if (!grade.grade || grade.grade === '-') {
-      continue; // no grade in this course yet
-    }
-    let courseName = 'Course ' + grade.courseid;
-    for (const course of courses) {
-      if (course.id === grade.courseid) {
-        courseName = cleanCourseName(course.fullname);
-      }
-    }
-    reply = reply + '\n• ' + courseName + ': ' + grade.grade;
-    found = found + 1;
-  }
-
-  if (found === 0) {
-    return 'No course grades yet.';
-  }
-  return reply;
-}
-
 // Turns whatever you texted into a reply
 async function replyTo(text) {
   const command = text.trim().toLowerCase();
@@ -106,9 +77,6 @@ async function replyTo(text) {
   }
   if (command === 'week') {
     return deadlinesReply('week');
-  }
-  if (command === 'grades') {
-    return gradesReply();
   }
   if (command === 'help' || command === 'hi' || command === 'hello') {
     return HELP_TEXT;

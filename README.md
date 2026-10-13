@@ -23,10 +23,9 @@ A small script running on **GitHub Actions** (so my Mac can be off) checks ESADE
 |---|---|
 | `due` | The same as the daily message: overdue work, plus anything due today or tomorrow |
 | `week` | The same as the Saturday message: overdue work, plus the next 7 days |
-| `grades` | Your overall grade in each course |
 | `reset` | Starts a new conversation (the AI forgets what you talked about) |
 | `help` | The list of commands |
-| anything else | A question for the AI, e.g. *"what feedback did I get on the last finance homework?"* It looks the answer up in Moodle through [moodle-mcp](https://github.com/IsaacAnwar/moodle-mcp). |
+| anything else | A question for the AI, e.g. *"what are my grades in finance?"* or *"what feedback did I get on the last finance homework?"* It looks the answer up in Moodle through [moodle-mcp](https://github.com/IsaacAnwar/moodle-mcp). |
 
 ---
 
